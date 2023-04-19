@@ -1,0 +1,664 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.2.2">Jekyll</generator><link href="/feed.xml" rel="self" type="application/atom+xml" /><link href="/" rel="alternate" type="text/html" /><updated>2023-04-19T13:15:40+00:00</updated><id>/feed.xml</id><entry><title type="html">Getting Started with containerd</title><link href="/blog/2017/08/15/containerd-getting-started/" rel="alternate" type="text/html" title="Getting Started with containerd" /><published>2017-08-15T00:00:00+00:00</published><updated>2017-08-15T00:00:00+00:00</updated><id>/blog/2017/08/15/containerd-getting-started</id><content type="html" xml:base="/blog/2017/08/15/containerd-getting-started/"><![CDATA[<h1 id="getting-started-with-containerd">Getting started with containerd</h1>
+
+<p>There are many different ways to use containerd.
+If you are a developer working on containerd you can use the <code class="language-plaintext highlighter-rouge">ctr</code> tool to quickly test features and functionality without writing extra code.
+However, if you want to integrate containerd into your project we have an easy to use client package that allows you to work with containerd.</p>
+
+<p>In this guide we will pull and run a redis server with containerd using the client package.
+We will assume that you are running a modern linux host for this example with a compatible build of <code class="language-plaintext highlighter-rouge">runc</code>.</p>
+
+<h2 id="starting-containerd">Starting containerd</h2>
+
+<p>You can download one of the latest builds for containerd on the <a href="https://github.com/containerd/containerd/releases">github releases</a> page and then use your favorite process supervisor to get the daemon started.
+If you are using systemd, we have a <code class="language-plaintext highlighter-rouge">containerd.service</code> file at the root of the repository that you can use.</p>
+
+<p>The daemon also uses a configuration file located in <code class="language-plaintext highlighter-rouge">/etc/containerd/config.toml</code> for specifying daemon level options.
+A sample configuration file looks like this:</p>
+
+<div class="language-toml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="py">subreaper</span> <span class="p">=</span> <span class="kc">true</span>
+<span class="py">oom_score</span> <span class="p">=</span> <span class="mi">-999</span>
+
+<span class="nn">[debug]</span>
+        <span class="py">level</span> <span class="p">=</span> <span class="s">"debug"</span>
+
+<span class="nn">[metrics]</span>
+        <span class="py">address</span> <span class="p">=</span> <span class="s">"127.0.0.1:1338"</span>
+
+<span class="nn">[plugins.linux]</span>
+        <span class="py">runtime</span> <span class="p">=</span> <span class="s">"runc"</span>
+        <span class="py">shim_debug</span> <span class="p">=</span> <span class="kc">true</span>
+</code></pre></div></div>
+
+<p>The default configuration can be generated via <code class="language-plaintext highlighter-rouge">containerd config default &gt; /etc/containerd/config.toml</code>.</p>
+
+<h2 id="connecting-to-containerd">Connecting to containerd</h2>
+
+<p>We will start a new <code class="language-plaintext highlighter-rouge">main.go</code> file and import the containerd root package that contains the client.</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">package</span> <span class="n">main</span>
+
+<span class="k">import</span> <span class="p">(</span>
+	<span class="s">"log"</span>
+
+	<span class="s">"github.com/containerd/containerd"</span>
+<span class="p">)</span>
+
+<span class="k">func</span> <span class="n">main</span><span class="p">()</span> <span class="p">{</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">redisExample</span><span class="p">();</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="n">log</span><span class="o">.</span><span class="n">Fatal</span><span class="p">(</span><span class="n">err</span><span class="p">)</span>
+	<span class="p">}</span>
+<span class="p">}</span>
+
+<span class="k">func</span> <span class="n">redisExample</span><span class="p">()</span> <span class="kt">error</span> <span class="p">{</span>
+	<span class="n">client</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">containerd</span><span class="o">.</span><span class="n">New</span><span class="p">(</span><span class="s">"/run/containerd/containerd.sock"</span><span class="p">)</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+	<span class="k">defer</span> <span class="n">client</span><span class="o">.</span><span class="n">Close</span><span class="p">()</span>
+	<span class="k">return</span> <span class="no">nil</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>This will create a new client with the default containerd socket path.
+Because we are working with a daemon over GRPC we need to create a <code class="language-plaintext highlighter-rouge">context</code> for use with calls to client methods.
+containerd is also namespaced for callers of the API.
+We should also set a namespace for our guide after creating the context.</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	<span class="n">ctx</span> <span class="o">:=</span> <span class="n">namespaces</span><span class="o">.</span><span class="n">WithNamespace</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">Background</span><span class="p">(),</span> <span class="s">"example"</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>Having a namespace for our usage ensures that containers, images, and other resources without containerd do not conflict with other users of a single daemon.</p>
+
+<h2 id="pulling-the-redis-image">Pulling the redis image</h2>
+
+<p>Now that we have a client to work with we need to pull an image.
+We can use the redis image based on alpine linux from the DockerHub.</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	<span class="n">image</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">client</span><span class="o">.</span><span class="n">Pull</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="s">"docker.io/library/redis:alpine"</span><span class="p">,</span> <span class="n">containerd</span><span class="o">.</span><span class="n">WithPullUnpack</span><span class="p">)</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+</code></pre></div></div>
+
+<p>The containerd client uses the <code class="language-plaintext highlighter-rouge">Opts</code> pattern for many of the method calls.
+We use the <code class="language-plaintext highlighter-rouge">containerd.WithPullUnpack</code> so that we not only fetch and download the content into containerd’s content store but also unpack it into a snapshotter for use as a root filesystem.</p>
+
+<h2 id="creating-an-oci-spec-and-container">Creating an OCI Spec and Container</h2>
+
+<p>Now that we have an image to base our container off of, we need to generate an OCI runtime specification that the container can be based off of.</p>
+
+<p>containerd provides reasonable defaults for generating OCI runtime specs.
+There is also an <code class="language-plaintext highlighter-rouge">Opt</code> for modifying the default config based on the image that we pulled.</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	<span class="n">spec</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">containerd</span><span class="o">.</span><span class="n">GenerateSpec</span><span class="p">(</span><span class="n">containerd</span><span class="o">.</span><span class="n">WithImageConfig</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">image</span><span class="p">))</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+</code></pre></div></div>
+
+<p>After we have a spec generated we need to create a container.
+The container will be based off of the image, use the runtime information in the spec that was just created, and we will allocate a new read-write snapshot so the container can store any persistent information.</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	<span class="n">container</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">client</span><span class="o">.</span><span class="n">NewContainer</span><span class="p">(</span>
+		<span class="n">ctx</span><span class="p">,</span>
+		<span class="s">"redis-server"</span><span class="p">,</span>
+		<span class="n">containerd</span><span class="o">.</span><span class="n">WithSpec</span><span class="p">(</span><span class="n">spec</span><span class="p">),</span>
+		<span class="n">containerd</span><span class="o">.</span><span class="n">WithImage</span><span class="p">(</span><span class="n">image</span><span class="p">),</span>
+		<span class="n">containerd</span><span class="o">.</span><span class="n">WithNewSnapshot</span><span class="p">(</span><span class="s">"redis-server-snapshot"</span><span class="p">,</span> <span class="n">image</span><span class="p">),</span>
+	<span class="p">)</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+	<span class="k">defer</span> <span class="n">container</span><span class="o">.</span><span class="n">Delete</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">containerd</span><span class="o">.</span><span class="n">WithSnapshotCleanup</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>When creating a new snapshot for the container we need to provide a snapshot ID as well as the Image that the container will be based on.
+By providing a separate snapshot ID than the container ID we can easily reuse, existing snapshots across different containers.</p>
+
+<p>We also add a line to delete the container along with its snapshot after we are done with this example.</p>
+
+<h2 id="creating-a-running-task">Creating a running Task</h2>
+
+<p>One thing that may be confusing at first for new containerd users is the separation between a <code class="language-plaintext highlighter-rouge">Container</code> and a <code class="language-plaintext highlighter-rouge">Task</code>.
+A container is a metadata object that resources are allocated and attached to.
+A task is a live, running process on the system.
+Tasks should be deleted after each run while a container can be used, updated, and queried multiple times.</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	<span class="n">task</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">container</span><span class="o">.</span><span class="n">NewTask</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">containerd</span><span class="o">.</span><span class="n">Stdio</span><span class="p">)</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+	<span class="k">defer</span> <span class="n">task</span><span class="o">.</span><span class="n">Delete</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>The new task that we just created is actually a running process on your system.
+We use the <code class="language-plaintext highlighter-rouge">containerd.Stdio</code> <code class="language-plaintext highlighter-rouge">Opt</code> so that all IO from the container is sent to our <code class="language-plaintext highlighter-rouge">main.go</code> process.</p>
+
+<p>If you are familiar with the OCI runtime actions, the task is currently in the “created” state.
+This means that the namespaces, root filesystem, and various container level settings have been initialized but the user defined process, in this example “redis-server”, has not been started.
+This gives users a chance to setup network interfaces or attach different tools to monitor the container.
+containerd also takes this opportunity to monitor your container as well.
+Waiting on things like the container’s exit status and cgroup metrics are setup at this point.</p>
+
+<p>If you are familiar with prometheus you can curl the containerd metrics endpoint (in the <code class="language-plaintext highlighter-rouge">config.toml</code> that we created) to see your container’s metrics:</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;</span> curl 127.0.0.1:1228/metrics
+</code></pre></div></div>
+
+<p>Pretty cool right?</p>
+
+<h2 id="task-wait-and-start">Task Wait and Start</h2>
+
+<p>Now that we have a task in the created state we need to make sure we that we wait on the task to exit so that we can close our example and cleanup the resources that we created.
+You always want to make sure you <code class="language-plaintext highlighter-rouge">Wait</code> before calling <code class="language-plaintext highlighter-rouge">Start</code> on a task.
+This makes sure that you do not encounter any races if the task has a simple program like <code class="language-plaintext highlighter-rouge">/bin/true</code> that exits promptly after calling start.</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	<span class="n">exitStatusC</span> <span class="o">:=</span> <span class="nb">make</span><span class="p">(</span><span class="k">chan</span> <span class="kt">uint32</span><span class="p">,</span> <span class="m">1</span><span class="p">)</span>
+	<span class="k">go</span> <span class="k">func</span><span class="p">()</span> <span class="p">{</span>
+		<span class="n">status</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">task</span><span class="o">.</span><span class="n">Wait</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span>
+		<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+			<span class="n">fmt</span><span class="o">.</span><span class="n">Println</span><span class="p">(</span><span class="n">err</span><span class="p">)</span>
+		<span class="p">}</span>
+		<span class="n">exitStatusC</span> <span class="o">&lt;-</span> <span class="n">status</span>
+	<span class="p">}()</span>
+
+	<span class="k">if</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">task</span><span class="o">.</span><span class="n">Start</span><span class="p">(</span><span class="n">ctx</span><span class="p">);</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Now we should see the <code class="language-plaintext highlighter-rouge">redis-server</code> logs in our terminal when we run the <code class="language-plaintext highlighter-rouge">main.go</code> file.</p>
+
+<h2 id="killing-the-task">Killing the task</h2>
+
+<p>Since we are running a long running server we will need to kill the task in order to exit out of our example.
+To do this we will simply call <code class="language-plaintext highlighter-rouge">Kill</code> on the task after waiting a couple of seconds so we have a chance to see the redis-server logs.</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	<span class="n">time</span><span class="o">.</span><span class="n">Sleep</span><span class="p">(</span><span class="m">3</span> <span class="o">*</span> <span class="n">time</span><span class="o">.</span><span class="n">Second</span><span class="p">)</span>
+
+	<span class="k">if</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">task</span><span class="o">.</span><span class="n">Kill</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">syscall</span><span class="o">.</span><span class="n">SIGTERM</span><span class="p">);</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+
+	<span class="n">status</span> <span class="o">:=</span> <span class="o">&lt;-</span><span class="n">exitStatusC</span>
+	<span class="n">fmt</span><span class="o">.</span><span class="n">Printf</span><span class="p">(</span><span class="s">"redis-server exited with status: %d</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">status</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>We wait on our exit status channel that we setup to ensure the task has fully exited and we get the exit status.
+If you have to reload containers or miss waiting on a task, <code class="language-plaintext highlighter-rouge">Delete</code> will also return the exit status when you finally delete the task.
+We got you covered.</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">status</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">task</span><span class="o">.</span><span class="n">Delete</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span>
+</code></pre></div></div>
+
+<h2 id="full-example">Full Example</h2>
+
+<p>Here is the full example that we just put together.</p>
+
+<div class="language-go highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">package</span> <span class="n">main</span>
+
+<span class="k">import</span> <span class="p">(</span>
+	<span class="s">"context"</span>
+	<span class="s">"fmt"</span>
+	<span class="s">"log"</span>
+	<span class="s">"syscall"</span>
+	<span class="s">"time"</span>
+
+	<span class="s">"github.com/containerd/containerd"</span>
+	<span class="s">"github.com/containerd/containerd/namespaces"</span>
+<span class="p">)</span>
+
+<span class="k">func</span> <span class="n">main</span><span class="p">()</span> <span class="p">{</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">redisExample</span><span class="p">();</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="n">log</span><span class="o">.</span><span class="n">Fatal</span><span class="p">(</span><span class="n">err</span><span class="p">)</span>
+	<span class="p">}</span>
+<span class="p">}</span>
+
+<span class="k">func</span> <span class="n">redisExample</span><span class="p">()</span> <span class="kt">error</span> <span class="p">{</span>
+	<span class="c">// create a new client connected to the default socket path for containerd</span>
+	<span class="n">client</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">containerd</span><span class="o">.</span><span class="n">New</span><span class="p">(</span><span class="s">"/run/containerd/containerd.sock"</span><span class="p">)</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+	<span class="k">defer</span> <span class="n">client</span><span class="o">.</span><span class="n">Close</span><span class="p">()</span>
+
+	<span class="c">// create a new context with an "example" namespace</span>
+	<span class="n">ctx</span> <span class="o">:=</span> <span class="n">namespaces</span><span class="o">.</span><span class="n">WithNamespace</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">Background</span><span class="p">(),</span> <span class="s">"example"</span><span class="p">)</span>
+
+	<span class="c">// pull the redis image from DockerHub</span>
+	<span class="n">image</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">client</span><span class="o">.</span><span class="n">Pull</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="s">"docker.io/library/redis:alpine"</span><span class="p">,</span> <span class="n">containerd</span><span class="o">.</span><span class="n">WithPullUnpack</span><span class="p">)</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+
+	<span class="c">// generate an OCI runtime spec using the Args, Env, etc from the redis image that we pulled</span>
+	<span class="n">spec</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">containerd</span><span class="o">.</span><span class="n">GenerateSpec</span><span class="p">(</span><span class="n">containerd</span><span class="o">.</span><span class="n">WithImageConfig</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">image</span><span class="p">))</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+
+	<span class="c">// create a container</span>
+	<span class="n">container</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">client</span><span class="o">.</span><span class="n">NewContainer</span><span class="p">(</span>
+		<span class="n">ctx</span><span class="p">,</span>
+		<span class="s">"redis-server"</span><span class="p">,</span>
+		<span class="n">containerd</span><span class="o">.</span><span class="n">WithSpec</span><span class="p">(</span><span class="n">spec</span><span class="p">),</span>
+		<span class="n">containerd</span><span class="o">.</span><span class="n">WithImage</span><span class="p">(</span><span class="n">image</span><span class="p">),</span>
+		<span class="n">containerd</span><span class="o">.</span><span class="n">WithNewSnapshot</span><span class="p">(</span><span class="s">"redis-server-snapshot"</span><span class="p">,</span> <span class="n">image</span><span class="p">),</span>
+	<span class="p">)</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+	<span class="k">defer</span> <span class="n">container</span><span class="o">.</span><span class="n">Delete</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">containerd</span><span class="o">.</span><span class="n">WithSnapshotCleanup</span><span class="p">)</span>
+
+	<span class="c">// create a task from the container</span>
+	<span class="n">task</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">container</span><span class="o">.</span><span class="n">NewTask</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">containerd</span><span class="o">.</span><span class="n">Stdio</span><span class="p">)</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+	<span class="k">defer</span> <span class="n">task</span><span class="o">.</span><span class="n">Delete</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span>
+
+	<span class="c">// make sure we wait before calling start</span>
+	<span class="n">exitStatusC</span> <span class="o">:=</span> <span class="nb">make</span><span class="p">(</span><span class="k">chan</span> <span class="kt">uint32</span><span class="p">,</span> <span class="m">1</span><span class="p">)</span>
+	<span class="k">go</span> <span class="k">func</span><span class="p">()</span> <span class="p">{</span>
+		<span class="n">status</span><span class="p">,</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">task</span><span class="o">.</span><span class="n">Wait</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span>
+		<span class="k">if</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+			<span class="n">fmt</span><span class="o">.</span><span class="n">Println</span><span class="p">(</span><span class="n">err</span><span class="p">)</span>
+		<span class="p">}</span>
+		<span class="n">exitStatusC</span> <span class="o">&lt;-</span> <span class="n">status</span>
+	<span class="p">}()</span>
+
+	<span class="c">// call start on the task to execute the redis server</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">task</span><span class="o">.</span><span class="n">Start</span><span class="p">(</span><span class="n">ctx</span><span class="p">);</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+
+	<span class="c">// sleep for a lil bit to see the logs</span>
+	<span class="n">time</span><span class="o">.</span><span class="n">Sleep</span><span class="p">(</span><span class="m">3</span> <span class="o">*</span> <span class="n">time</span><span class="o">.</span><span class="n">Second</span><span class="p">)</span>
+
+	<span class="c">// kill the process and get the exit status</span>
+	<span class="k">if</span> <span class="n">err</span> <span class="o">:=</span> <span class="n">task</span><span class="o">.</span><span class="n">Kill</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">syscall</span><span class="o">.</span><span class="n">SIGTERM</span><span class="p">);</span> <span class="n">err</span> <span class="o">!=</span> <span class="no">nil</span> <span class="p">{</span>
+		<span class="k">return</span> <span class="n">err</span>
+	<span class="p">}</span>
+
+	<span class="c">// wait for the process to fully exit and print out the exit status</span>
+
+	<span class="n">status</span> <span class="o">:=</span> <span class="o">&lt;-</span><span class="n">exitStatusC</span>
+	<span class="n">fmt</span><span class="o">.</span><span class="n">Printf</span><span class="p">(</span><span class="s">"redis-server exited with status: %d</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">status</span><span class="p">)</span>
+
+	<span class="k">return</span> <span class="no">nil</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>We can build this example and run it as follows to see our hard work come together.</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">&gt;</span> go build <span class="nt">-o</span> example main.go
+<span class="o">&gt;</span> <span class="nb">sudo</span> ./example
+
+1:C 04 Aug 20:41:37.682 <span class="c"># oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo</span>
+1:C 04 Aug 20:41:37.682 <span class="c"># Redis version=4.0.1, bits=64, commit=00000000, modified=0, pid=1, just started</span>
+1:C 04 Aug 20:41:37.682 <span class="c"># Warning: no config file specified, using the default config. In order to specify a config file use redis-server /path/to/redis.conf</span>
+1:M 04 Aug 20:41:37.682 <span class="c"># You requested maxclients of 10000 requiring at least 10032 max file descriptors.</span>
+1:M 04 Aug 20:41:37.682 <span class="c"># Server can't set maximum open files to 10032 because of OS error: Operation not permitted.</span>
+1:M 04 Aug 20:41:37.682 <span class="c"># Current maximum open files is 1024. maxclients has been reduced to 992 to compensate for low ulimit. If you need higher maxclients increase 'ulimit -n'.</span>
+1:M 04 Aug 20:41:37.683 <span class="k">*</span> Running <span class="nv">mode</span><span class="o">=</span>standalone, <span class="nv">port</span><span class="o">=</span>6379.
+1:M 04 Aug 20:41:37.683 <span class="c"># WARNING: The TCP backlog setting of 511 cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of 128.</span>
+1:M 04 Aug 20:41:37.684 <span class="c"># Server initialized</span>
+1:M 04 Aug 20:41:37.684 <span class="c"># WARNING overcommit_memory is set to 0! Background save may fail under low memory condition. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.</span>
+1:M 04 Aug 20:41:37.684 <span class="c"># WARNING you have Transparent Huge Pages (THP) support enabled in your kernel. This will create latency and memory usage issues with Redis. To fix this issue run the command 'echo never &gt; /sys/kernel/mm/transparent_hugepage/enabled' as root, and add it to your /etc/rc.local in order to retain the setting after a reboot. Redis must be restarted after THP is disabled.</span>
+1:M 04 Aug 20:41:37.684 <span class="k">*</span> Ready to accept connections
+1:signal-handler <span class="o">(</span>1501879300<span class="o">)</span> Received SIGTERM scheduling shutdown...
+1:M 04 Aug 20:41:40.791 <span class="c"># User requested shutdown...</span>
+1:M 04 Aug 20:41:40.791 <span class="k">*</span> Saving the final RDB snapshot before exiting.
+1:M 04 Aug 20:41:40.794 <span class="k">*</span> DB saved on disk
+1:M 04 Aug 20:41:40.794 <span class="c"># Redis is now ready to exit, bye bye...</span>
+redis-server exited with status: 0
+</code></pre></div></div>
+
+<p>In the end, we really did not write that much code when you use the client package.</p>
+
+<p>I hope this guide helped to get you up and running with containerd.
+Feel free to join the <a href="https://dockr.ly/community">slack channel</a> if you have any questions and like all things, if you want to help contribute to containerd or this guide, submit a pull request.</p>]]></content><author><name>Michael Crosby</name></author><category term="blog" /><summary type="html"><![CDATA[Getting started with containerd There are many different ways to use containerd. If you are a developer working on containerd you can use the ctr tool to quickly test features and functionality without writing extra code. However, if you want to integrate containerd into your project we have an easy to use client package that allows you to work with containerd. In this guide we will pull and run a redis server with containerd using the client package. We will assume that you are running a modern linux host for this example with a compatible build of runc. Starting containerd You can download one of the latest builds for containerd on the github releases page and then use your favorite process supervisor to get the daemon started. If you are using systemd, we have a containerd.service file at the root of the repository that you can use. The daemon also uses a configuration file located in /etc/containerd/config.toml for specifying daemon level options. A sample configuration file looks like this: subreaper = true oom_score = -999 [debug] level = "debug" [metrics] address = "127.0.0.1:1338" [plugins.linux] runtime = "runc" shim_debug = true The default configuration can be generated via containerd config default &gt; /etc/containerd/config.toml. Connecting to containerd We will start a new main.go file and import the containerd root package that contains the client. package main import ( "log" "github.com/containerd/containerd" ) func main() { if err := redisExample(); err != nil { log.Fatal(err) } } func redisExample() error { client, err := containerd.New("/run/containerd/containerd.sock") if err != nil { return err } defer client.Close() return nil } This will create a new client with the default containerd socket path. Because we are working with a daemon over GRPC we need to create a context for use with calls to client methods. containerd is also namespaced for callers of the API. We should also set a namespace for our guide after creating the context. ctx := namespaces.WithNamespace(context.Background(), "example") Having a namespace for our usage ensures that containers, images, and other resources without containerd do not conflict with other users of a single daemon. Pulling the redis image Now that we have a client to work with we need to pull an image. We can use the redis image based on alpine linux from the DockerHub. image, err := client.Pull(ctx, "docker.io/library/redis:alpine", containerd.WithPullUnpack) if err != nil { return err } The containerd client uses the Opts pattern for many of the method calls. We use the containerd.WithPullUnpack so that we not only fetch and download the content into containerd’s content store but also unpack it into a snapshotter for use as a root filesystem. Creating an OCI Spec and Container Now that we have an image to base our container off of, we need to generate an OCI runtime specification that the container can be based off of. containerd provides reasonable defaults for generating OCI runtime specs. There is also an Opt for modifying the default config based on the image that we pulled. spec, err := containerd.GenerateSpec(containerd.WithImageConfig(ctx, image)) if err != nil { return err } After we have a spec generated we need to create a container. The container will be based off of the image, use the runtime information in the spec that was just created, and we will allocate a new read-write snapshot so the container can store any persistent information. container, err := client.NewContainer( ctx, "redis-server", containerd.WithSpec(spec), containerd.WithImage(image), containerd.WithNewSnapshot("redis-server-snapshot", image), ) if err != nil { return err } defer container.Delete(ctx, containerd.WithSnapshotCleanup) When creating a new snapshot for the container we need to provide a snapshot ID as well as the Image that the container will be based on. By providing a separate snapshot ID than the container ID we can easily reuse, existing snapshots across different containers. We also add a line to delete the container along with its snapshot after we are done with this example. Creating a running Task One thing that may be confusing at first for new containerd users is the separation between a Container and a Task. A container is a metadata object that resources are allocated and attached to. A task is a live, running process on the system. Tasks should be deleted after each run while a container can be used, updated, and queried multiple times. task, err := container.NewTask(ctx, containerd.Stdio) if err != nil { return err } defer task.Delete(ctx) The new task that we just created is actually a running process on your system. We use the containerd.Stdio Opt so that all IO from the container is sent to our main.go process. If you are familiar with the OCI runtime actions, the task is currently in the “created” state. This means that the namespaces, root filesystem, and various container level settings have been initialized but the user defined process, in this example “redis-server”, has not been started. This gives users a chance to setup network interfaces or attach different tools to monitor the container. containerd also takes this opportunity to monitor your container as well. Waiting on things like the container’s exit status and cgroup metrics are setup at this point. If you are familiar with prometheus you can curl the containerd metrics endpoint (in the config.toml that we created) to see your container’s metrics: &gt; curl 127.0.0.1:1228/metrics Pretty cool right? Task Wait and Start Now that we have a task in the created state we need to make sure we that we wait on the task to exit so that we can close our example and cleanup the resources that we created. You always want to make sure you Wait before calling Start on a task. This makes sure that you do not encounter any races if the task has a simple program like /bin/true that exits promptly after calling start. exitStatusC := make(chan uint32, 1) go func() { status, err := task.Wait(ctx) if err != nil { fmt.Println(err) } exitStatusC &lt;- status }() if err := task.Start(ctx); err != nil { return err } Now we should see the redis-server logs in our terminal when we run the main.go file. Killing the task Since we are running a long running server we will need to kill the task in order to exit out of our example. To do this we will simply call Kill on the task after waiting a couple of seconds so we have a chance to see the redis-server logs. time.Sleep(3 * time.Second) if err := task.Kill(ctx, syscall.SIGTERM); err != nil { return err } status := &lt;-exitStatusC fmt.Printf("redis-server exited with status: %d\n", status) We wait on our exit status channel that we setup to ensure the task has fully exited and we get the exit status. If you have to reload containers or miss waiting on a task, Delete will also return the exit status when you finally delete the task. We got you covered. status, err := task.Delete(ctx) Full Example Here is the full example that we just put together. package main import ( "context" "fmt" "log" "syscall" "time" "github.com/containerd/containerd" "github.com/containerd/containerd/namespaces" ) func main() { if err := redisExample(); err != nil { log.Fatal(err) } } func redisExample() error { // create a new client connected to the default socket path for containerd client, err := containerd.New("/run/containerd/containerd.sock") if err != nil { return err } defer client.Close() // create a new context with an "example" namespace ctx := namespaces.WithNamespace(context.Background(), "example") // pull the redis image from DockerHub image, err := client.Pull(ctx, "docker.io/library/redis:alpine", containerd.WithPullUnpack) if err != nil { return err } // generate an OCI runtime spec using the Args, Env, etc from the redis image that we pulled spec, err := containerd.GenerateSpec(containerd.WithImageConfig(ctx, image)) if err != nil { return err } // create a container container, err := client.NewContainer( ctx, "redis-server", containerd.WithSpec(spec), containerd.WithImage(image), containerd.WithNewSnapshot("redis-server-snapshot", image), ) if err != nil { return err } defer container.Delete(ctx, containerd.WithSnapshotCleanup) // create a task from the container task, err := container.NewTask(ctx, containerd.Stdio) if err != nil { return err } defer task.Delete(ctx) // make sure we wait before calling start exitStatusC := make(chan uint32, 1) go func() { status, err := task.Wait(ctx) if err != nil { fmt.Println(err) } exitStatusC &lt;- status }() // call start on the task to execute the redis server if err := task.Start(ctx); err != nil { return err } // sleep for a lil bit to see the logs time.Sleep(3 * time.Second) // kill the process and get the exit status if err := task.Kill(ctx, syscall.SIGTERM); err != nil { return err } // wait for the process to fully exit and print out the exit status status := &lt;-exitStatusC fmt.Printf("redis-server exited with status: %d\n", status) return nil } We can build this example and run it as follows to see our hard work come together. &gt; go build -o example main.go &gt; sudo ./example 1:C 04 Aug 20:41:37.682 # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo 1:C 04 Aug 20:41:37.682 # Redis version=4.0.1, bits=64, commit=00000000, modified=0, pid=1, just started 1:C 04 Aug 20:41:37.682 # Warning: no config file specified, using the default config. In order to specify a config file use redis-server /path/to/redis.conf 1:M 04 Aug 20:41:37.682 # You requested maxclients of 10000 requiring at least 10032 max file descriptors. 1:M 04 Aug 20:41:37.682 # Server can't set maximum open files to 10032 because of OS error: Operation not permitted. 1:M 04 Aug 20:41:37.682 # Current maximum open files is 1024. maxclients has been reduced to 992 to compensate for low ulimit. If you need higher maxclients increase 'ulimit -n'. 1:M 04 Aug 20:41:37.683 * Running mode=standalone, port=6379. 1:M 04 Aug 20:41:37.683 # WARNING: The TCP backlog setting of 511 cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of 128. 1:M 04 Aug 20:41:37.684 # Server initialized 1:M 04 Aug 20:41:37.684 # WARNING overcommit_memory is set to 0! Background save may fail under low memory condition. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect. 1:M 04 Aug 20:41:37.684 # WARNING you have Transparent Huge Pages (THP) support enabled in your kernel. This will create latency and memory usage issues with Redis. To fix this issue run the command 'echo never &gt; /sys/kernel/mm/transparent_hugepage/enabled' as root, and add it to your /etc/rc.local in order to retain the setting after a reboot. Redis must be restarted after THP is disabled. 1:M 04 Aug 20:41:37.684 * Ready to accept connections 1:signal-handler (1501879300) Received SIGTERM scheduling shutdown... 1:M 04 Aug 20:41:40.791 # User requested shutdown... 1:M 04 Aug 20:41:40.791 * Saving the final RDB snapshot before exiting. 1:M 04 Aug 20:41:40.794 * DB saved on disk 1:M 04 Aug 20:41:40.794 # Redis is now ready to exit, bye bye... redis-server exited with status: 0 In the end, we really did not write that much code when you use the client package. I hope this guide helped to get you up and running with containerd. Feel free to join the slack channel if you have any questions and like all things, if you want to help contribute to containerd or this guide, submit a pull request.]]></summary></entry><entry><title type="html">Moby Summit June 2017 Recap</title><link href="/blog/2017/06/26/moby-summit-recap/" rel="alternate" type="text/html" title="Moby Summit June 2017 Recap" /><published>2017-06-26T00:00:00+00:00</published><updated>2017-06-26T00:00:00+00:00</updated><id>/blog/2017/06/26/moby-summit-recap</id><content type="html" xml:base="/blog/2017/06/26/moby-summit-recap/"><![CDATA[<h3 id="moby-summit-at-docker-headquarter">Moby Summit at Docker headquarter</h3>
+
+<p><img src="/images/moby-summit.jpg" alt="Moby Summit Intro" title="Moby Summit Intro" /></p>
+
+<p>On June 19 2017, 90 members of the Moby community gathered at Docker headquarter in San Francisco for the second Moby Summit.  This was an opportunity for the community to discuss the progress and future of the Moby project, two months after it was announced.</p>
+
+<p>We started the day with an introduction by Solomon Hykes, and a look at the website redesign: the <a href="http://mobyproject.org/">Moby project website</a> now has a <a href="http://mobyproject.org/blog/">blog</a>, an event calendar, a list of projects, and a <a href="http://mobyproject.org/community/">community page</a> with links to various community resources. The <a href="https://github.com/moby/mobywebsite">website code is open source</a>, issues and PRs to write guest blog posts or enhance it are welcome.</p>
+
+<p>Then each team gave an update on their progress: Linuxkit, containerd, InfraKit, SwarmKit and LibNetwork, as well as the three new <a href="http://mobyproject.org/projects/">Moby Special Interest Groups</a>, Linuxkit Security, Security Scanning &amp; Notary and Orchestration Security. All these talks have been recorded and you can find the videos and slides below.</p>
+
+<p>In the afternoon, we split into 5 Birds Of Feathers (BOF) sessions: runc/containerd, LinuxKit, InfraKit, Security, and Security Scanning. You can find links to the BOF Notes at the end of this post.</p>
+
+<p>We ended the day with a recap of the BOF sessions, and some beer.</p>
+
+<h3 id="moby-summit-introduction">Moby Summit Introduction</h3>
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/Bkm9RFeQ-qI" frameborder="0" allowfullscreen=""></iframe>
+
+<p>Slides: <a href="https://www.slideshare.net/chanezon/moby-introduction-june-2017">Moby Summit Introduction</a></p>
+
+<h3 id="linuxkit-update">LinuxKit Update</h3>
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/ByfegHVbJk0" frameborder="0" allowfullscreen=""></iframe>
+
+<p>Slides: <a href="https://www.slideshare.net/Docker/linuxkit-update-at-the-moby-summit">LinuxKit update</a></p>
+
+<h3 id="containerd-update">containerd Update</h3>
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/sSyb7776YXY" frameborder="0" allowfullscreen=""></iframe>
+
+<h3 id="infrakit-update">InfraKit Update</h3>
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/a83zyeWPkYw" frameborder="0" allowfullscreen=""></iframe>
+
+<p>Slides: <a href="http://www.slideshare.net/Docker/infrakit-update-at-moby-summit-june-2017">Infrakit update</a></p>
+
+<h3 id="swarmkit-update">SwarmKit update</h3>
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/LXvn2MNX1I8" frameborder="0" allowfullscreen=""></iframe>
+
+<p><a href="https://github.com/dperny/swarm-proxy">Swarm Proxy</a> is a program for managing Docker Swarm services behind a reverse proxy. It uses the Docker events stream to monitor for services being created and removed, and then uses Swarm Configs to update a reverse proxy service to correctly route traffic to those services. It is stateless.</p>
+
+<h3 id="libnetwork-update">Libnetwork update</h3>
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/rcdbGnty1n0" frameborder="0" allowfullscreen=""></iframe>
+
+<p>Slides: <a href="http://www.slideshare.net/Docker/libnetwork-update-at-moby-summit-june-2017">Libnetwork update</a></p>
+
+<h3 id="security-update">Security Update</h3>
+
+<p>Finally, the Docker security team gave the update on the following topics:</p>
+<ul>
+  <li>LinuxKit security update</li>
+  <li>Security scanning and Notary update</li>
+  <li>Orchestration security update</li>
+</ul>
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/EvGOfTJ_nEo" frameborder="0" allowfullscreen=""></iframe>
+
+<p>Slides: <a href="https://www.slideshare.net/Docker/llinuxkit-security-security-scanning-and-notary">LinuxKit Security and container container scanning with Notary</a></p>
+
+<p>Slides: <a href="https://www.slideshare.net/diogomonica/moby-sig-orchestration-security-summit-presentation">Orchestration security</a></p>
+
+<h3 id="bof-summary-notes">BOF Summary Notes</h3>
+<ul>
+  <li><a href="https://github.com/containerd/containerd/blob/master/reports/2017-06-23.md">runC / containerd</a></li>
+  <li><a href="https://github.com/linuxkit/linuxkit/blob/master/reports/2017-06-19-summit.md">LinuxKit</a></li>
+  <li><a href="https://forums.mobyproject.org/t/2017-06-19-meeing-notes/79">Security Scanning &amp; Notary</a></li>
+  <li><a href="https://forums.mobyproject.org/t/2017-06-19-orchestration-security-sig-meeting/90">Orchestration Security</a></li>
+</ul>
+
+<p><a href="https://twitter.com/share?text=+Check+out+videos+and+slides+from+the+last+Moby+Summit+%23containerd+%23linuxkit+%23infrakit+&amp;via=moby&amp;related=moby&amp;url=https://mobyproject.org/blog/2017/06/26/moby-summit-recap/">Tweet “Check out the videos &amp; slides from the last @moby Summit #containerd #linuxkit #infrakit “</a></p>]]></content><author><name>Patrick Chanezon</name></author><category term="blog" /><summary type="html"><![CDATA[Moby Summit at Docker headquarter On June 19 2017, 90 members of the Moby community gathered at Docker headquarter in San Francisco for the second Moby Summit. This was an opportunity for the community to discuss the progress and future of the Moby project, two months after it was announced. We started the day with an introduction by Solomon Hykes, and a look at the website redesign: the Moby project website now has a blog, an event calendar, a list of projects, and a community page with links to various community resources. The website code is open source, issues and PRs to write guest blog posts or enhance it are welcome. Then each team gave an update on their progress: Linuxkit, containerd, InfraKit, SwarmKit and LibNetwork, as well as the three new Moby Special Interest Groups, Linuxkit Security, Security Scanning &amp; Notary and Orchestration Security. All these talks have been recorded and you can find the videos and slides below. In the afternoon, we split into 5 Birds Of Feathers (BOF) sessions: runc/containerd, LinuxKit, InfraKit, Security, and Security Scanning. You can find links to the BOF Notes at the end of this post. We ended the day with a recap of the BOF sessions, and some beer. Moby Summit Introduction Slides: Moby Summit Introduction LinuxKit Update Slides: LinuxKit update containerd Update InfraKit Update Slides: Infrakit update SwarmKit update Swarm Proxy is a program for managing Docker Swarm services behind a reverse proxy. It uses the Docker events stream to monitor for services being created and removed, and then uses Swarm Configs to update a reverse proxy service to correctly route traffic to those services. It is stateless. Libnetwork update Slides: Libnetwork update Security Update Finally, the Docker security team gave the update on the following topics: LinuxKit security update Security scanning and Notary update Orchestration security update Slides: LinuxKit Security and container container scanning with Notary Slides: Orchestration security BOF Summary Notes runC / containerd LinuxKit Security Scanning &amp; Notary Orchestration Security Tweet “Check out the videos &amp; slides from the last @moby Summit #containerd #linuxkit #infrakit “]]></summary></entry><entry><title type="html">Sign all the things!</title><link href="/blog/2017/06/26/sign-all-the-things/" rel="alternate" type="text/html" title="Sign all the things!" /><published>2017-06-26T00:00:00+00:00</published><updated>2017-06-26T00:00:00+00:00</updated><id>/blog/2017/06/26/sign-all-the-things</id><content type="html" xml:base="/blog/2017/06/26/sign-all-the-things/"><![CDATA[<h2 id="notary--linuxkit-deep-dive">Notary + LinuxKit deep dive</h2>
+
+<p>Just a few months ago, we open sourced <a href="https://github.com/linuxkit/linuxkit">LinuxKit</a>, a toolkit to build secure, lean, and portable Linux subsystems. One of the key features of LinuxKit lies in its componentization: each of its individual components, including its kernel and system services, are completely swappable.<!--more--></p>
+
+<p>As you can imagine, it is important to <em>trust</em> each and every one of these components so you can be sure your LinuxKit subsystem is assembled securely. In particular, you should be able to understand <em>where</em> the components come from, <em>what</em> they are supposed to include, and <em>when</em> you should stop using them in case they become out of date. This is a hard requirement for every package – after all, a system is only as secure as its most vulnerable component.</p>
+
+<p>With this goal in mind, the LinuxKit team has been using <a href="https://github.com/docker/notary">Notary</a>, a signing and verification framework that is also part of the Moby Project, to make this easy. Today, every LinuxKit package is signed with Notary. We’d like to tell you more about what this means for your LinuxKit subsystems today, and what you can expect in the future.</p>
+
+<h2 id="why-notary">Why Notary?</h2>
+
+<p>Cryptographic signing is an absolute necessity for establishing trust over content sent over an untrusted media such as the internet. While there are many cryptographic signing systems available for use, most only provide integrity and authenticity guarantees - that the package contents were not modified, and that it was signed off by a key you trust.</p>
+
+<p>Notary not only provides integrity and authenticity, but goes above and beyond by providing <em>survivable key compromise</em> and <em>freshness</em> properties.</p>
+
+<p>By providing survivable key compromise, Notary ensures that any key can be seamlessly rotated out without breaking any trust or functionality in the system. This is particularly important if part of your signing process occurs in online, more exposed environments, where keys are more likely to be exfiltrated. Additionally, it’s difficult in many other signing frameworks to rotate the keys without discarding the root of trust or manually configuring subkeys.</p>
+
+<p>Freshness ensures that you cannot download an old package, or get frozen in time on a stale package. This is a common issue in many signing systems: because it is difficult to invalidate or expire signatures, old and potentially vulnerable packages often carry still-valid signatures (ex: openssl with Heartbleed).</p>
+
+<p>Notary achieves these guarantees by signing separate metadata to capture context about its packages. It’s worth mentioning that Notary and the signed metadata it produces is an implementation of <a href="https://theupdateframework.github.io/">The Update Framework</a>, which is a research project based from <a href="https://www.nyu.edu/">NYU</a> that has been published and discussed in several peer-reviewed academic publications.</p>
+
+<h2 id="notary--linuxkit-better-together">Notary + LinuxKit: better together</h2>
+
+<h3 id="perfect-for-our-packaging">Perfect for our packaging</h3>
+
+<p>LinuxKit uses Docker images as the distribution format for all of its packages, including its kernel and init process, and the Docker Hub to store them. While Notary can sign over any type of content, Docker includes a robust and easy-to-use integration known as <a href="https://blog.docker.com/2015/08/content-trust-docker-1-8/">Docker Content Trust</a>. By simply exporting <code class="language-plaintext highlighter-rouge">DOCKER_CONTENT_TRUST=1</code>, Docker will verify all signatures on pull, and sign images on push.</p>
+
+<p><img src="/images/trust_push.png" alt="Docker push with Content Trust" /></p>
+
+<p>We also implemented a trust validation step in the <code class="language-plaintext highlighter-rouge">moby</code> build tool by leveraging the Notary library. Any packages that are specified by image or organization name in the LinuxKit yaml file will be verified using the Notary library. Today, all LinuxKit packages in the <code class="language-plaintext highlighter-rouge">linuxkit</code> organization in Docker Hub are signed:</p>
+
+<p><img src="/images/trust_yml.png" alt="trust on moby build" /></p>
+
+<h3 id="collaboration-made-easy">Collaboration made easy</h3>
+
+<p>Each LinuxKit maintainer has their own key for signing purposes. These keys map to less-privileged roles in Notary known as delegations - not only does this prevent the need for sharing any private key material, but it also works seamlessly with Docker Content Trust, such that <code class="language-plaintext highlighter-rouge">DOCKER_CONTENT_TRUST=1 docker push linuxkit/kernel:4.9.x</code> pushes and signs with the appropriate keys. That said, the LinuxKit team went an extra step further to ensure that every Makefile for LinuxKit packages includes Docker Content Trust on every pull and push, so running <code class="language-plaintext highlighter-rouge">make</code> also works for convenience.</p>
+
+<p><img src="/images/trust_roles.png" alt="delegation roles for LinuxKit maintainers" /></p>
+
+<p>As we can see above, each maintainer has their own key and role, and there are a couple of extra roles for release management and CI. We can easily determine which role and key signed off on a package because that context is captured in Notary’s metadata, for example <a href="https://github.com/rn">Rolf</a> has signed off on several of the 4.10 series kernel packages:</p>
+
+<p><img src="/images/trust_targets.png" alt="Notary signatures on linuxkit/kernel images" /></p>
+
+<p>Using Notary delegations, we can not only audit who signed the packages, but enforce policy about the signatures on a package. For example: a package could require a simple threshold of two signatures, or even signoff from two maintainers and CI to be considered valid.</p>
+
+<h2 id="a-trusted-package-manager">A trusted package manager</h2>
+
+<p>Today, Notary and Docker Content Trust are deeply integrated into all LinuxKit packages, not only providing strong cryptographic and usability features, but ultimately equipping LinuxKit with a trusted package manager.</p>
+
+<p>A great example of this integration is how the <code class="language-plaintext highlighter-rouge">moby</code> tool leverages Notary during offline builds for a LinuxKit image. If the <code class="language-plaintext highlighter-rouge">moby</code> tool detects it is offline when trying to update to the latest signed data for an individual package, it will fall back to already trusted data from a previous validation if the data is still unexpired. It will perform the same signature verification step using the key data it had previously trusted, and output a warning to the prompt to inform the user that there may be a more up to date version remotely for when they can get back online:</p>
+
+<p><img src="/images/trust_caching.png" alt="handling offline signature verification" /></p>
+
+<p>Overall, the LinuxKit team is excited to leverage Notary’s state-of-the-art signing and verification features, and we view it as a fundamental step to establish trust in our packages - to us, if a LinuxKit package isn’t signed by Notary, it should be as if <em>it doesn’t exist</em>.</p>
+
+<p>Going forward, there are many features of Notary yet to explore: fine-grained auditing, signature threshold policy enforcement, and even key pinning to our roots of trust. We look forward to more advanced integrations between Notary and LinuxKit.</p>]]></content><author><name>Riyaz Faizullabhoy</name></author><category term="blog" /><summary type="html"><![CDATA[Notary + LinuxKit deep dive Just a few months ago, we open sourced LinuxKit, a toolkit to build secure, lean, and portable Linux subsystems. One of the key features of LinuxKit lies in its componentization: each of its individual components, including its kernel and system services, are completely swappable.]]></summary></entry><entry><title type="html">Moby Summit at DockerCon 2017-05-11</title><link href="/blog/2017/05/11/moby-summit-report/" rel="alternate" type="text/html" title="Moby Summit at DockerCon 2017-05-11" /><published>2017-05-11T00:00:00+00:00</published><updated>2017-05-11T00:00:00+00:00</updated><id>/blog/2017/05/11/moby-summit-report</id><content type="html" xml:base="/blog/2017/05/11/moby-summit-report/"><![CDATA[<h2 id="moby-summit-videos-from-dockercon">Moby Summit videos from DockerCon</h2>
+
+<p>Last month at DockerCon, Solomon introduced the <a href="https://blog.docker.com/2017/04/introducing-the-moby-project/">Moby Project: a new open-source project to advance the software containerization movement</a>. The idea behind the project is to help the ecosystem take containers mainstream by providing a library of components, a framework for assembling them into custom container-based systems and a place for all container enthusiasts to experiment and exchange ideas.<!--more--> Going forward, Docker will be assembled using Moby, see <a href="http://mobyproject.org/#moby-and-docker">Moby and Docker</a> or the diagram below for more details.</p>
+
+<p><img src="/images/moby-docker.jpg" alt="alt text" title="Moby Project diagram" /></p>
+
+<p>Knowing that that a good number of maintainers, contributors and advanced Docker users would be attending DockerCon, we decided to organize the first Moby Summit in collaboration with the Cloud Native Computing Foundation (CNCF). The summit was a small collaborative event for container hackers who are actively maintaining, contributing or generally involved or interested in the design and development of components of the Moby project library in particular: <a href="https://github.com/linuxkit/linuxkit">LinuxKit</a>, <a href="https://github.com/containerd">containerd</a>, <a href="https://github.com/docker/infrakit">Infrakit</a>, <a href="https://github.com/docker/swarmkit">SwarmKit</a>, <a href="https://github.com/docker/libnetwork">libnetwork</a> and <a href="https://github.com/docker/notary">Notary</a></p>
+
+<p>Here’s what we covered during the first part of the summit:</p>
+
+<ul>
+  <li>
+    <p><a href="https://youtu.be/-C_YL6za0-E?t=5s">0:05</a> - Opening words by Patrick Chanezon</p>
+  </li>
+  <li>
+    <p><a href="https://youtu.be/-C_YL6za0-E?t=9m6s">9:05</a> - Moby Project Q&amp;A with Solomon Hykes and Justin Cormack</p>
+  </li>
+  <li>
+    <p><a href="https://youtu.be/-C_YL6za0-E?t=1h14m32s">60:14</a> - Quick update on containerd by Michael Crosby</p>
+  </li>
+</ul>
+
+<p>Here’s what we covered during the 2nd part of the summit:</p>
+
+<ul>
+  <li>
+    <p><a href="https://youtu.be/Raj0zaqBxOc?t=18s">0:18</a> - Swarmkit update by Andrea Luzzardi</p>
+  </li>
+  <li>
+    <p><a href="https://youtu.be/Raj0zaqBxOc?t=7m52s">7:52</a> - Libnetwork update by Madhu Venugopal</p>
+  </li>
+  <li>
+    <p><a href="https://youtu.be/Raj0zaqBxOc?t=16m27s">16:27</a> - Notary update by David Lawrence</p>
+  </li>
+  <li>
+    <p><a href="https://youtu.be/Raj0zaqBxOc?t=19m59s">19:59</a> - InfraKit update by David Chung</p>
+  </li>
+  <li>
+    <p><a href="https://youtu.be/Raj0zaqBxOc?t=36m39s">36:39</a>- Infinit update by Julien Quintard</p>
+  </li>
+  <li>
+    <p><a href="https://youtu.be/Raj0zaqBxOc?t=49m9s">49:09</a> - MirageOS by Mindy Preston</p>
+  </li>
+</ul>
+
+<p>The 3rd part of the summit consisted in birds of feather session around each components of the Moby Project library. This was a perfect opportunity for maintainers and contributors to discuss open issues, pull requests and roadmap as you can see below.
+<img src="https://blog.docker.com/wp-content/uploads/containerd.jpg" alt="alt text" title="containerd summit at DockerCon" /></p>
+
+<p>Learn more about the Moby Project:</p>
+
+<ul>
+  <li>
+    <p>Follow <a href="https://twitter.com/moby">@moby on twitter</a></p>
+  </li>
+  <li>
+    <p>Register for the next <a href="https://www.eventbrite.com/e/moby-summit-tickets-34483396768">Moby Summit</a> at Docker HQ on 6/19</p>
+  </li>
+  <li>
+    <p>Join the conversation on <a href="dockr.ly/community">Slack #Moby-project</a></p>
+  </li>
+</ul>]]></content><author><name>Victor Coisne</name></author><category term="blog" /><summary type="html"><![CDATA[Moby Summit videos from DockerCon Last month at DockerCon, Solomon introduced the Moby Project: a new open-source project to advance the software containerization movement. The idea behind the project is to help the ecosystem take containers mainstream by providing a library of components, a framework for assembling them into custom container-based systems and a place for all container enthusiasts to experiment and exchange ideas.]]></summary></entry><entry><title type="html">Moby Builder Report 2017-05-08</title><link href="/blog/2017/05/08/moby-builder-report/" rel="alternate" type="text/html" title="Moby Builder Report 2017-05-08" /><published>2017-05-08T00:00:00+00:00</published><updated>2017-05-08T00:00:00+00:00</updated><id>/blog/2017/05/08/moby-builder-report</id><content type="html" xml:base="/blog/2017/05/08/moby-builder-report/"><![CDATA[<h2 id="quality-dependency-interface-switch">Quality: Dependency interface switch</h2>
+
+<p>Proposal for <a href="https://github.com/moby/moby/issues/32904">switching the dependency interface</a> for current builder package. That should fix the current problems with data leakage and conflicts caused by daemon state cleanup scripts.<!--more--></p>
+
+<p>Merged as part of this effort:</p>
+
+<ul>
+  <li><a href="https://github.com/moby/moby/pull/32952">Move dispatch state to a new struct</a></li>
+  <li><a href="https://github.com/moby/moby/pull/32773">Cleanup unnecessary mutate then revert of b.runConfig</a></li>
+</ul>
+
+<p>In review:</p>
+<ul>
+  <li><a href="https://github.com/moby/moby/pull/33061">Refactor builder probe cache and container backend</a></li>
+  <li><a href="https://github.com/moby/moby/pull/33054">Expose GetImage interface for builder</a></li>
+</ul>
+
+<h3 id="merged-docker-build---iidfile">Merged: docker build --iidfile</h3>
+
+<p><a href="https://github.com/moby/moby/pull/32406"><code class="language-plaintext highlighter-rouge">docker build --iidfile</code> to capture the ID of the build result</a>. New option can be used by the CLI applications to get back the image ID of build result. API users can use the <code class="language-plaintext highlighter-rouge">Aux</code> messages in progress stream to also get the IDs for intermediate build stages, for example to share them for build cache.</p>
+
+<h3 id="new-feature-long-running-session">New feature: Long running session</h3>
+
+<p>PR for <a href="https://github.com/moby/moby/pull/32677">adding long-running session between daemon and cli</a> that enables advanced features like incremental context send, build credentials from the client, ssh forwarding etc.</p>
+
+<p>@simonferquel proposed a <a href="https://github.com/moby/moby/pull/33047">grpc-only version of that interface</a> that should simplify the setup needed for describing new features for the session. Looking for design reviews.</p>
+
+<p>The feature also needs to be reworked after CLI split.</p>
+
+<h3 id="buildkit">buildkit</h3>
+
+<p>Not much progress <a href="https://github.com/moby/moby/issues/32925">apart from some design discussion</a>. Next step would be to open up a repo.</p>
+
+<h3 id="proposals-for-new-dockerfile-features-that-need-design-feedback">Proposals for new Dockerfile features that need design feedback:</h3>
+
+<p><a href="https://github.com/moby/moby/issues/32100">Add IMPORT/EXPORT commands to Dockerfile</a></p>
+
+<p><a href="https://github.com/moby/moby/issues/32487">Add <code class="language-plaintext highlighter-rouge">DOCKEROS/DOCKERARCH</code> default ARG to Dockerfile</a></p>
+
+<p><a href="https://github.com/moby/moby/issues/32507">Add support for <code class="language-plaintext highlighter-rouge">RUN --mount</code></a></p>
+
+<p><a href="https://github.com/moby/moby/issues/32550">DAG image builder</a></p>
+
+<p><a href="https://github.com/moby/moby/issues/32963">Option to export the hash of the build context</a> (new)</p>
+
+<p><a href="https://github.com/moby/moby/issues/33002#issuecomment-299041162">Allow --cache-from=*</a> (new)</p>
+
+<p>If you are interested in implementing any of them, leave a comment on the specific issues.</p>
+
+<h3 id="other-new-builder-features-currently-in-code-review">Other new builder features currently in code-review:</h3>
+
+<p><a href="https://github.com/moby/moby/pull/32502">Allow builds from any git remote ref</a></p>
+
+<p><a href="https://github.com/moby/moby/pull/32997">Fix a case where using FROM scratch as NAME would fail</a></p>
+
+<h3 id="backlog">Backlog:</h3>
+
+<p><a href="https://github.com/moby/moby/pull/30637">Build secrets</a> will be brought up again in next maintainer’s meeting to evaluate how to move on with this, if any other proposals have changed the objective and if we should wait for swarm secrets to be available first.</p>]]></content><author><name>Moby Dev Team</name></author><category term="blog" /><summary type="html"><![CDATA[Quality: Dependency interface switch Proposal for switching the dependency interface for current builder package. That should fix the current problems with data leakage and conflicts caused by daemon state cleanup scripts.]]></summary></entry><entry><title type="html">Moby Dev Report 2017-05-08</title><link href="/blog/2017/05/08/moby-dev-report/" rel="alternate" type="text/html" title="Moby Dev Report 2017-05-08" /><published>2017-05-08T00:00:00+00:00</published><updated>2017-05-08T00:00:00+00:00</updated><id>/blog/2017/05/08/moby-dev-report</id><content type="html" xml:base="/blog/2017/05/08/moby-dev-report/"><![CDATA[<h2 id="daily-meeting">Daily Meeting</h2>
+
+<p>A daily meeting is hosted on <a href="https://dockercommunity.slack.com">slack</a> every business day at 9am PST on the channel <code class="language-plaintext highlighter-rouge">#moby-project</code>.
+During this meeting, we are talking about the <a href="https://github.com/moby/moby/issues/32867">tasks</a> needed to be done for splitting moby and docker.<!--more--></p>
+
+<h2 id="topics-discussed-last-week">Topics discussed last week</h2>
+
+<h3 id="the-cli-split">The CLI split</h3>
+
+<p>The Docker CLI was succesfully moved to <a href="https://github.com/docker/cli">https://github.com/docker/cli</a> last week thanks to @tiborvass
+The Docker CLI is now compiled from the <a href="https://github.com/moby/moby/blob/a762ceace4e8c1c7ce4fb582789af9d8074be3e1/Dockerfile#L248">Dockerfile</a></p>
+
+<h3 id="mailing-list">Mailing list</h3>
+
+<p>Discourse is available at <a href="https://forums.mobyproject.org/">forums.mobyproject.org</a> thanks to @thaJeztah. mailing-list mode is enabled, so once you register there, you will received every new threads / messages via email. So far, 3 categories were created: Architecture, Meta &amp; Support. The last step missing is to setup an email address to be able to start a new thread via email.</p>
+
+<h3 id="find-a-place-for-pkg">Find a place for <code class="language-plaintext highlighter-rouge">/pkg</code></h3>
+
+<p>Lots of discussion and progress made on this <a href="https://github.com/moby/moby/issues/32989">topic</a> thanks to @dnephin. <a href="https://gist.github.com/dnephin/35dc10f6b6b7017f058a71908b301d38">Here is the list</a> proposed to split/reorganize the pkgs.</p>
+
+<h3 id="find-a-good-and-non-confusing-home-for-the-remaining-monolith">Find a good and non-confusing home for the remaining monolith</h3>
+
+<p>@cpuguy83 is leading the effort <a href="https://github.com/moby/moby/pull/33022">here</a>. It’s still WIP but the way we are experimenting with is to reorganise directories within the moby/moby.</p>
+
+<h2 id="componentization">Componentization</h2>
+
+<p>So far only work on the builder, by @tonistiigi, happened regarding the componentization effort.</p>]]></content><author><name>Moby Dev Team</name></author><category term="blog" /><summary type="html"><![CDATA[Daily Meeting A daily meeting is hosted on slack every business day at 9am PST on the channel #moby-project. During this meeting, we are talking about the tasks needed to be done for splitting moby and docker.]]></summary></entry><entry><title type="html">Moby Builder Report 2017-05-01</title><link href="/blog/2017/05/01/moby-builder-report/" rel="alternate" type="text/html" title="Moby Builder Report 2017-05-01" /><published>2017-05-01T00:00:00+00:00</published><updated>2017-05-01T00:00:00+00:00</updated><id>/blog/2017/05/01/moby-builder-report</id><content type="html" xml:base="/blog/2017/05/01/moby-builder-report/"><![CDATA[<h2 id="buildkit">buildkit</h2>
+
+<p>As part of the goals of <a href="https://github.com/moby/moby#transitioning-to-moby">Moby</a> to split the current platform into reusable components and to provide a future vision for the builder component new <a href="https://github.com/moby/moby/issues/32925">buildkit proposal</a> was opened with early design draft.<!--more--></p>
+
+<p>Buildkit is a library providing the core essentials of running a build process using isolated sandboxed commands. It is designed for extensibility and customization. Buildkit supports multiple build declaration formats(frontends) and multiple ways for outputting build results(not just docker images). It doesn’t make decisions for a specific worker, snapshot or exporter implementations.</p>
+
+<p>It is designed to help find the most efficient way to process build tasks and intelligently cache them for repeated invocations.</p>
+
+<h3 id="quality-dependency-interface-switch">Quality: Dependency interface switch</h3>
+
+<p>To improve quality and performance, a new <a href="https://github.com/moby/moby/issues/32904">proposal was made for switching the dependency interface</a> for current builder package. That should fix the current problems with data leakage and conflicts caused by daemon state cleanup scripts.</p>
+
+<p>@dnephin is in progress of refactoring current builder code to logical areas as a preparation work for updating this interface.</p>
+
+<p>Merged as part of this effort:</p>
+
+<ul>
+  <li><a href="https://github.com/moby/moby/pull/32580">Refactor Dockerfile.parser and directive</a></li>
+  <li><a href="https://github.com/moby/moby/pull/32600">Refactor builder dispatch state</a></li>
+  <li><a href="https://github.com/moby/moby/pull/32601">Use a bytes.Buffer for shell_words string concat</a></li>
+  <li><a href="https://github.com/moby/moby/pull/32772">Refactor <code class="language-plaintext highlighter-rouge">Builder.commit()</code></a></li>
+  <li><a href="https://github.com/moby/moby/pull/32858">Remove b.escapeToken, create ShellLex</a></li>
+</ul>
+
+<h3 id="new-feature-long-running-session">New feature: Long running session</h3>
+
+<p>PR for <a href="https://github.com/moby/moby/pull/32677">adding long-running session between daemon and cli</a> that enabled advanced features like incremental context send, build credentials from the client, ssh forwarding etc. is looking for initial design review. It is currently open if features implemented on top of it would use a specific transport implementation on the wire or a generic interface(current implementation). @tonistiigi is working on adding persistent cache capabilities that are currently missing from that PR. It also needs to be figured out how the <a href="https://github.com/moby/moby/pull/32694">cli split</a> will affect features like this.</p>
+
+<h3 id="proposals-for-new-dockerfile-features-that-need-design-feedback">Proposals for new Dockerfile features that need design feedback:</h3>
+
+<p><a href="https://github.com/moby/moby/issues/32100">Add IMPORT/EXPORT commands to Dockerfile</a></p>
+
+<p><a href="https://github.com/moby/moby/issues/32487">Add <code class="language-plaintext highlighter-rouge">DOCKEROS/DOCKERARCH</code> default ARG to Dockerfile</a></p>
+
+<p><a href="https://github.com/moby/moby/issues/32507">Add support for <code class="language-plaintext highlighter-rouge">RUN --mount</code></a></p>
+
+<p>These proposals have gotten mostly positive feedback for now. We will leave them open for a couple of more weeks and then decide what actions to take in a maintainers meeting. Also, if you are interested in implementing any of them, leave a comment on the specific issues.</p>
+
+<h3 id="other-new-builder-features-currently-in-code-review">Other new builder features currently in code-review:</h3>
+
+<p><a href="https://github.com/moby/moby/pull/32406"><code class="language-plaintext highlighter-rouge">docker build --iidfile</code> to capture the ID of the build result</a></p>
+
+<p><a href="https://github.com/moby/moby/pull/32502">Allow builds from any git remote ref</a></p>
+
+<h3 id="backlog">Backlog:</h3>
+
+<p><a href="https://github.com/moby/moby/pull/30637">Build secrets</a> will be brought up again in next maintainer’s meeting to evaluate how to move on with this, if any other proposals have changed the objective and if we should wait for swarm secrets to be available first.</p>]]></content><author><name>Moby Dev Team</name></author><category term="blog" /><summary type="html"><![CDATA[buildkit As part of the goals of Moby to split the current platform into reusable components and to provide a future vision for the builder component new buildkit proposal was opened with early design draft.]]></summary></entry><entry><title type="html">Moby Dev Report 2017-05-01</title><link href="/blog/2017/05/01/moby-dev-report/" rel="alternate" type="text/html" title="Moby Dev Report 2017-05-01" /><published>2017-05-01T00:00:00+00:00</published><updated>2017-05-01T00:00:00+00:00</updated><id>/blog/2017/05/01/moby-dev-report</id><content type="html" xml:base="/blog/2017/05/01/moby-dev-report/"><![CDATA[<h2 id="moby-dev-report">Moby Dev Report</h2>
+
+<p>This is the 1st report, since the Moby project was announced at DockerCon. Thank you to everyone that stayed an extra day to attend the summit on Thursday.<!--more--></p>
+
+<h2 id="daily-meeting">Daily Meeting</h2>
+
+<p>A daily meeting is hosted on <a href="dockercommunity.slack.com">slack</a> every business day at 9am PST on the channel <code class="language-plaintext highlighter-rouge">#moby-project</code>.
+During this meeting, we are talking about the <a href="https://github.com/moby/moby/issues/32867">tasks</a> needed to be done for splitting moby and docker.</p>
+
+<h2 id="topics-discussed-last-week">Topics discussed last week</h2>
+
+<h3 id="the-moby-tool">The moby tool</h3>
+
+<p>The moby tool currently lives at <a href="https://github.com/moby/tool">https://github.com/moby/tool</a>, it’s only a temporary place and will soon be merged in <a href="https://github.com/moby/moby">https://github.com/moby/moby</a>.</p>
+
+<h3 id="the-cli-split">The CLI split</h3>
+
+<p>Ongoing work to split the Docker CLI into <a href="https://github.com/docker/cli">https://github.com/docker/cli</a> is happening <a href="https://github.com/moby/moby/pull/32694">here</a>.
+We are almost done, it should be merged soon.</p>
+
+<h3 id="mailing-list">Mailing list</h3>
+
+<p>Slack works great for synchronous communication, but we need to place for async discussion. A mailing list is currently being setup.</p>
+
+<h4 id="find-a-good-and-non-confusing-home-for-the-remaining-monolith">Find a good and non-confusing home for the remaining monolith</h4>
+
+<p>Lots of discussion and progress made on this topic, see <a href="https://github.com/moby/moby/issues/32871">here</a>. The work will start this week.</p>
+
+<h2 id="componentization">Componentization</h2>
+
+<p>So far only work on the builder happened regarding the componentization effort.</p>]]></content><author><name>Moby Dev Team</name></author><category term="blog" /><summary type="html"><![CDATA[Moby Dev Report This is the 1st report, since the Moby project was announced at DockerCon. Thank you to everyone that stayed an extra day to attend the summit on Thursday.]]></summary></entry></feed>
